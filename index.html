@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#2563eb">
+<meta name="description" content="Staff attendance and late tracker that works offline.">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Attendance">
+<title>Staff Attendance Tracker</title>
+<style>
+:root{--bg:#f5f6f8;--card:#fff;--ink:#1d2330;--mute:#6b7280;--line:#e3e6ea;--acc:#2563eb;--ok:#15803d;--late:#c2410c;--bad:#b91c1c;--off:#6b7280;--comp:#7c3aed;--in:#eef5ff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13161c;--card:#1c2029;--ink:#e6e8ec;--mute:#9aa1ad;--line:#2c313c;--acc:#60a5fa;--ok:#4ade80;--late:#fb923c;--bad:#f87171;--off:#9ca3af;--comp:#a78bfa;--in:#1e2a3d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,Segoe UI,sans-serif}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:12px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0 auto 0 0}
+nav button,.btn{border:1px solid var(--line);background:var(--card);color:var(--ink);padding:7px 12px;border-radius:7px;cursor:pointer;font:inherit}
+nav button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn.primary{background:var(--acc);color:#fff;border-color:var(--acc)}
+main{max-width:1200px;margin:0 auto;padding:16px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+input,select{font:inherit;color:var(--ink);background:var(--card);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}
+.kpi b{display:block;font-size:24px}.kpi span{color:var(--mute);font-size:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px;overflow-x:auto}
+.card h2{font-size:14px;margin:0 0 10px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+table{border-collapse:collapse;width:100%}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{font-size:12px;color:var(--mute);font-weight:600}
+td input.punch{background:var(--in);width:150px}
+.s-OnTime{color:var(--ok);font-weight:600}.s-Late{color:var(--late);font-weight:600}.s-Absent{color:var(--bad);font-weight:600}
+.s-WeeklyOff,.s-Leave{color:var(--off)}.s-Comp,.s-CompensatoryLeave{color:var(--comp);font-weight:600}
+.alert{color:var(--bad);font-weight:600}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.trend{display:flex;align-items:flex-end;gap:3px;height:140px}
+.trend div{flex:1;background:var(--acc);border-radius:3px 3px 0 0;min-width:4px;position:relative}
+.muted{color:var(--mute);font-size:12px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Staff Attendance &amp; Late Tracker</h1>
+  <nav id="nav">
+    <button data-t="dash" class="on">Dashboard</button>
+    <button data-t="att">Attendance</button>
+    <button data-t="week">Weekly Summary</button>
+    <button data-t="emp">Employees</button>
+  </nav>
+  <button class="btn primary hidden" id="installBtn">Install app</button>
+</header>
+<main>
+<div class="card hidden" id="firstRun"><h2>Welcome</h2><p>No staff data on this device yet. Go to <b>Employees</b> &rarr; <b>Restore backup</b> and choose <code>attendance-data-backup.json</code>. You only need to do this once per device.</p></div>
+<!-- DASHBOARD -->
+<section id="dash">
+  <div class="bar"><label>Snapshot date <input type="date" id="dDate"></label></div>
+  <div class="kpis" id="kpis"></div>
+  <div class="grid2">
+    <div class="card"><h2>Status – snapshot day</h2><table id="dStatus"></table></div>
+    <div class="card"><h2>Month to date – by department</h2><table id="dDept"></table></div>
+  </div>
+  <div class="card"><h2>Daily attendance % – <span id="dMonth"></span></h2><div class="trend" id="dTrend"></div></div>
+</section>
+
+<!-- ATTENDANCE -->
+<section id="att" class="hidden">
+  <div class="bar">
+    <button class="btn" id="aPrev">◀</button>
+    <input type="date" id="aDate">
+    <button class="btn" id="aNext">▶</button>
+    <select id="aDept"><option value="">All departments</option></select>
+    <input id="aSearch" placeholder="Search name…">
+    <span class="muted">Punch In: a time (e.g. 9:05 AM) or Weekly Off / Absent / Comp / Compensatory Leave / Leave</span>
+  </div>
+  <div class="card"><table id="aTable"></table></div>
+  <datalist id="kw"><option>Weekly Off</option><option>Absent</option><option>Comp</option><option>Compensatory Leave</option><option>Leave</option></datalist>
+</section>
+
+<!-- WEEKLY -->
+<section id="week" class="hidden">
+  <div class="bar"><label>Week starting (Mon) <input type="date" id="wDate"></label></div>
+  <div class="card"><table id="wTable"></table></div>
+</section>
+
+<!-- EMPLOYEES -->
+<section id="emp" class="hidden">
+  <div class="card"><h2>Settings</h2>
+    <div class="bar">
+      <label>Grace period (min) <input type="number" id="sGrace" min="0" style="width:70px"></label>
+      <label>Weekly late limit <input type="number" id="sLimit" min="0" style="width:70px"></label>
+      <label>Weeks allowed to compensate <input type="number" id="sComp" min="0" style="width:70px"></label>
+    </div>
+  </div>
+  <div class="card"><h2>Staff</h2>
+    <table id="eTable"></table>
+    <div class="bar" style="margin-top:10px"><button class="btn" id="eAdd">+ Add employee</button></div>
+  </div>
+  <div class="card"><h2>Data</h2>
+    <div class="bar">
+      <button class="btn primary" id="xCsv">Export attendance CSV</button>
+      <button class="btn" id="xJson">Backup (JSON)</button>
+      <label class="btn">Restore backup<input type="file" id="xLoad" accept=".json" hidden></label>
+      <button class="btn" id="xReset">Clear all data</button>
+    </div>
+    <p class="muted">Changes save automatically in this browser. Use Backup to move data to another computer.</p>
+  </div>
+</section>
+</main>
+
+<script>
+const SEED = {"settings": {"compWeeks": 1, "lateLimit": 3, "grace": 15}, "employees": [], "records": {}};
+const KEY = 'staffAttendance.v1';
+let db;
+try { db = JSON.parse(localStorage.getItem(KEY)) } catch (e) {}
+if (!db) db = JSON.parse(JSON.stringify(SEED));
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)) } catch (e) {} };
+
+// ---------- helpers ----------
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, '0');
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+const parseISO = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d) };
+const addDays = (s, n) => { const d = parseISO(s); d.setDate(d.getDate()+n); return iso(d) };
+const monday = s => { const d = parseISO(s); d.setDate(d.getDate() - ((d.getDay()+6)%7)); return iso(d) };
+const hmToMin = s => { const [h,m] = s.split(':').map(Number); return h*60+m };
+const minToLabel = m => { if (m === '' || m == null || isNaN(m)) return ''; m = ((+m % 1440)+1440)%1440;
+  const h = Math.floor(m/60), mm = m%60; return `${(h%12)||12}:${pad(mm)} ${h<12?'AM':'PM'}` };
+const KEYWORDS = ['Weekly Off','Absent','Comp','Compensatory Leave','Leave'];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function parsePunch(txt) {
+  txt = txt.trim(); if (!txt) return '';
+  const kw = KEYWORDS.find(k => k.toLowerCase() === txt.toLowerCase());
+  if (kw) return kw;
+  const m = txt.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm|a|p)?$/i);
+  if (!m) return null;
+  let h = +m[1], mi = +(m[2]||0); const ap = (m[3]||'').toLowerCase();
+  if (ap.startsWith('p') && h < 12) h += 12; if (ap.startsWith('a') && h === 12) h = 0;
+  if (h > 23 || mi > 59) return null;
+  return String(h*60+mi);
+}
+
+// Returns {status, late} for an employee on a date
+function evalRec(emp, date) {
+  const r = db.records[date+'|'+emp.name];
+  if (!r || r[0] === '') return { status: '', late: 0 };
+  const p = r[0];
+  if (isNaN(p)) return { status: p, late: 0 };
+  let diff = (+p - hmToMin(emp.start)) % 1440;   // handles shifts crossing midnight
+  if (diff > 720) diff -= 1440; if (diff < -720) diff += 1440;
+  return diff > db.settings.grace ? { status: 'Late', late: diff } : { status: 'On Time', late: 0 };
+}
+const cls = s => 's-' + s.replace(/\s/g,'');
+const allDates = () => { const ds = new Set(Object.keys(db.records).map(k => k.split('|')[0])); return [...ds].sort() };
+const today = iso(new Date());
+const lastDate = () => { const d = allDates(); return d.length ? (d[d.length-1] < today ? d[d.length-1] : today) : today };
+
+// ---------- tabs ----------
+$('nav').onclick = e => { const t = e.target.dataset.t; if (!t) return;
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
+  document.querySelectorAll('main > section').forEach(s => s.classList.toggle('hidden', s.id !== t));
+  render(); };
+const active = () => document.querySelector('nav button.on').dataset.t;
+
+// ---------- dashboard ----------
+function renderDash() {
+  const date = $('dDate').value;
+  const c = { 'On Time':0, Late:0, Absent:0, 'Weekly Off':0, Comp:0, 'Compensatory Leave':0, Leave:0, '':0 };
+  db.employees.forEach(e => c[evalRec(e, date).status]++);
+  const present = c['On Time'] + c.Late + c.Comp;
+  const working = present + c.Absent;
+  const pct = working ? Math.round(present/working*100) + '%' : '–';
+  $('kpis').innerHTML = [['Headcount',db.employees.length],['Present',present],['On Time',c['On Time']],['Late',c.Late],
+    ['Absent',c.Absent],['Weekly Off',c['Weekly Off']],['Attendance %',pct]].map(([k,v]) => `<div class="kpi"><b>${v}</b><span>${k}</span></div>`).join('');
+  $('dStatus').innerHTML = '<tr><th>Status</th><th>Staff</th></tr>' +
+    Object.entries(c).map(([k,v]) => `<tr><td class="${cls(k||'none')}">${k||'Not recorded'}</td><td>${v}</td></tr>`).join('');
+
+  const month = date.slice(0,7);
+  const depts = [...new Set(db.employees.map(e => e.dept))];
+  const dates = allDates().filter(d => d.startsWith(month) && d <= date);
+  const rows = depts.map(dp => { const es = db.employees.filter(e => e.dept === dp); let l=0,a=0;
+    dates.forEach(d => es.forEach(e => { const s = evalRec(e,d).status; if (s==='Late') l++; if (s==='Absent') a++; }));
+    return `<tr><td>${esc(dp)}</td><td>${es.length}</td><td>${l}</td><td>${a}</td></tr>` });
+  $('dDept').innerHTML = '<tr><th>Department</th><th>Staff</th><th>Lates</th><th>Absents</th></tr>' + rows.join('');
+
+  $('dMonth').textContent = parseISO(date).toLocaleString('en',{month:'long',year:'numeric'});
+  $('dTrend').innerHTML = allDates().filter(d => d.startsWith(month)).map(d => {
+    let p=0,w=0; db.employees.forEach(e => { const s = evalRec(e,d).status;
+      if (['On Time','Late','Comp'].includes(s)) {p++;w++} else if (s==='Absent') w++; });
+    const v = w ? p/w*100 : 0;
+    return `<div style="height:${v}%" title="${d}: ${Math.round(v)}%"></div>` }).join('');
+}
+
+// ---------- attendance ----------
+function renderAtt() {
+  const date = $('aDate').value, dept = $('aDept').value, q = $('aSearch').value.toLowerCase();
+  const wk = monday(date);
+  const emps = db.employees.filter(e => (!dept || e.dept === dept) && e.name.toLowerCase().includes(q))
+    .sort((a,b) => a.name.localeCompare(b.name));
+  $('aTable').innerHTML = '<tr><th>Employee</th><th>Dept</th><th>Start</th><th>Punch In</th><th>Time Out</th><th>Status</th><th>Min Late</th><th>Late this week</th><th>Remarks</th></tr>' +
+    emps.map(e => {
+      const r = db.records[date+'|'+e.name] || ['',''];
+      const ev = evalRec(e, date);
+      let lw = 0; if (ev.status === 'Late') for (let d = wk; d <= date; d = addDays(d,1)) if (evalRec(e,d).status === 'Late') lw++;
+      const pv = r[0] === '' ? '' : isNaN(r[0]) ? r[0] : minToLabel(r[0]);
+      let rem = ev.status === 'Late' ? `Late by ${ev.late} min` : ev.status === 'Absent' ? 'Owes 1 comp day' :
+        ev.status === 'Comp' ? 'Comp day – clears 1 owed' : ev.status === 'Compensatory Leave' ? 'Comp leave taken' : ev.status;
+      const alert = lw > db.settings.lateLimit;
+      if (alert) rem += ` – ALERT: late ${lw} times this week`;
+      return `<tr data-n="${esc(e.name)}"><td>${esc(e.name)}</td><td>${esc(e.dept)}</td><td>${minToLabel(hmToMin(e.start))}</td>
+        <td><input class="punch" list="kw" value="${esc(pv)}" data-f="0"></td>
+        <td><input value="${minToLabel(r[1])}" data-f="1" style="width:100px"></td>
+        <td class="${cls(ev.status)}">${ev.status}</td><td>${ev.late||''}</td><td>${ev.status==='Late'?lw:''}</td>
+        <td class="${alert?'alert':''}">${esc(rem)}</td></tr>` }).join('');
+}
+$('aTable').addEventListener('change', e => {
+  const inp = e.target; if (!inp.dataset.f) return;
+  const name = inp.closest('tr').dataset.n, key = $('aDate').value + '|' + name;
+  const v = parsePunch(inp.value);
+  if (v === null || (inp.dataset.f === '1' && isNaN(v))) { alert('Enter a time like 9:05 AM' + (inp.dataset.f==='0' ? ' or a keyword.' : '.')); inp.focus(); return; }
+  const r = db.records[key] || ['',''];
+  r[+inp.dataset.f] = v;
+  if (r[0] === '' && r[1] === '') delete db.records[key]; else db.records[key] = r;
+  save(); renderAtt();
+});
+$('aPrev').onclick = () => { $('aDate').value = addDays($('aDate').value,-1); renderAtt() };
+$('aNext').onclick = () => { $('aDate').value = addDays($('aDate').value,1); renderAtt() };
+['aDate','aDept','aSearch'].forEach(id => $(id).addEventListener('input', renderAtt));
+
+// ---------- weekly summary ----------
+function compInfo(e, upto) {
+  // FIFO: each Comp / Compensatory Leave clears the oldest outstanding absence
+  const owed = []; let absT = 0, compT = 0;
+  for (const d of allDates()) { if (d > upto) break;
+    const s = evalRec(e,d).status;
+    if (s === 'Absent') { owed.push(d); absT++ } else if (s === 'Comp' || s === 'Compensatory Leave') { owed.shift(); compT++ } }
+  const deadlineWeeks = db.settings.compWeeks;
+  const overdue = owed.filter(d => addDays(monday(d), 7*(deadlineWeeks+1)) <= upto).length;
+  return { owed: Math.max(0, absT - compT), overdue };
+}
+function renderWeek() {
+  const wk = monday($('wDate').value); $('wDate').value = wk;
+  const end = addDays(wk, 6);
+  $('wTable').innerHTML = '<tr><th>Employee</th><th>Dept</th><th>Late</th><th>Total min late</th><th>Absent</th><th>Comp</th><th>Weekly Off</th><th>Leave</th><th>Comp owed (total)</th><th>Comp overdue</th><th>Alert</th></tr>' +
+    [...db.employees].sort((a,b) => a.name.localeCompare(b.name)).map(e => {
+      let late=0,min=0,abs=0,comp=0,off=0,lv=0;
+      for (let d = wk; d <= end; d = addDays(d,1)) { const ev = evalRec(e,d);
+        if (ev.status==='Late') {late++;min+=ev.late} else if (ev.status==='Absent') abs++;
+        else if (ev.status==='Comp'||ev.status==='Compensatory Leave') comp++; else if (ev.status==='Weekly Off') off++; else if (ev.status==='Leave') lv++; }
+      const ci = compInfo(e, end);
+      const al = [late > db.settings.lateLimit ? `Late ${late}×` : '', ci.overdue ? `${ci.overdue} comp overdue` : ''].filter(Boolean).join(' · ');
+      return `<tr><td>${esc(e.name)}</td><td>${esc(e.dept)}</td><td class="${late>db.settings.lateLimit?'alert':''}">${late}</td><td>${min}</td><td>${abs}</td><td>${comp}</td><td>${off}</td><td>${lv}</td><td>${ci.owed}</td><td class="${ci.overdue?'alert':''}">${ci.overdue}</td><td class="alert">${al}</td></tr>` }).join('');
+}
+$('wDate').addEventListener('input', renderWeek);
+
+// ---------- employees & settings ----------
+function renderEmp() {
+  $('sGrace').value = db.settings.grace; $('sLimit').value = db.settings.lateLimit; $('sComp').value = db.settings.compWeeks;
+  $('eTable').innerHTML = '<tr><th>ID</th><th>Name</th><th>Shift Start</th><th>Department</th><th></th></tr>' +
+    db.employees.map((e,i) => `<tr data-i="${i}"><td><input data-k="id" value="${esc(e.id)}" style="width:80px"></td>
+      <td><input data-k="name" value="${esc(e.name)}" style="width:240px"></td>
+      <td><input type="time" data-k="start" value="${e.start}"></td>
+      <td><input data-k="dept" value="${esc(e.dept)}" list="depts" style="width:120px"></td>
+      <td><button class="btn" data-del>Remove</button></td></tr>`).join('') +
+    `<datalist id="depts">${[...new Set(db.employees.map(e=>e.dept))].map(d=>`<option>${esc(d)}</option>`).join('')}</datalist>`;
+}
+$('eTable').addEventListener('change', e => {
+  const k = e.target.dataset.k; if (!k) return;
+  const emp = db.employees[e.target.closest('tr').dataset.i], v = e.target.value.trim();
+  if (k === 'name' && v !== emp.name) { // carry attendance over to the new name
+    for (const key of Object.keys(db.records)) { const [d,n] = key.split('|'); if (n === emp.name) { db.records[d+'|'+v] = db.records[key]; delete db.records[key] } } }
+  emp[k] = v; save(); fillDepts();
+});
+$('eTable').addEventListener('click', e => { if (!e.target.hasAttribute('data-del')) return;
+  const i = e.target.closest('tr').dataset.i;
+  if (confirm(`Remove ${db.employees[i].name}? Their past records stay saved.`)) { db.employees.splice(i,1); save(); renderEmp(); fillDepts() } });
+$('eAdd').onclick = () => { const n = db.employees.length + 1;
+  db.employees.push({ id: 'EMP' + String(n).padStart(3,'0'), name: 'New Employee ' + n, start: '09:00', dept: 'Social' }); save(); renderEmp() };
+[['sGrace','grace'],['sLimit','lateLimit'],['sComp','compWeeks']].forEach(([id,k]) =>
+  $(id).addEventListener('change', () => { db.settings[k] = Math.max(0, +$(id).value || 0); save() }));
+
+function download(name, text, type) { const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); URL.revokeObjectURL(a.href) }
+$('xCsv').onclick = () => {
+  const q = s => `"${String(s).replace(/"/g,'""')}"`;
+  const lines = [['Date','Employee ID','Employee','Department','Scheduled Start','Punch In','Time Out','Status','Minutes Late'].join(',')];
+  allDates().forEach(d => db.employees.forEach(e => { const r = db.records[d+'|'+e.name]; if (!r) return; const ev = evalRec(e,d);
+    lines.push([d,e.id,e.name,e.dept,minToLabel(hmToMin(e.start)),isNaN(r[0])?r[0]:minToLabel(r[0]),minToLabel(r[1]),ev.status,ev.late||''].map(q).join(',')) }));
+  download('attendance.csv', '﻿' + lines.join('\r\n'), 'text/csv') };
+$('xJson').onclick = () => download('attendance-backup.json', JSON.stringify(db), 'application/json');
+$('xLoad').onchange = async e => { try { const d = JSON.parse(await e.target.files[0].text());
+  if (!d.employees || !d.records) throw 0; db = d; save(); init(); alert('Backup restored.') } catch (_) { alert('Not a valid backup file.') } };
+$('xReset').onclick = () => { if (confirm('Delete all staff and attendance on this device? Make a Backup first if you need it.')) { db = JSON.parse(JSON.stringify(SEED)); save(); init() } };
+
+// ---------- init ----------
+function fillDepts() { const cur = $('aDept').value;
+  $('aDept').innerHTML = '<option value="">All departments</option>' + [...new Set(db.employees.map(e=>e.dept))].map(d=>`<option>${esc(d)}</option>`).join('');
+  $('aDept').value = cur }
+function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: renderEmp })[active()]() }
+function init() { const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
+$('dDate').addEventListener('input', renderDash);
+init();
+// ---------- PWA ----------
+function checkFirstRun(){ $('firstRun').classList.toggle('hidden', db.employees.length > 0) }
+checkFirstRun();
+const _origInit = init; init = function(){ _origInit(); checkFirstRun() };
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(console.error));
+}
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('installBtn').classList.remove('hidden') });
+$('installBtn').onclick = async () => { if (!installEvt) return; installEvt.prompt(); await installEvt.userChoice; installEvt = null; $('installBtn').classList.add('hidden') };
+window.addEventListener('appinstalled', () => $('installBtn').classList.add('hidden'));
+</script>
+</body>
+</html>
