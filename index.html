@@ -43,6 +43,8 @@ td input.punch{background:var(--in);width:150px}
 .trend div{flex:1;background:var(--acc);border-radius:3px 3px 0 0;min-width:4px;position:relative}
 .muted{color:var(--mute);font-size:12px}
 .hidden{display:none}
+#ttResult h2{color:var(--ok)} #ttResult ul{margin:6px 0 0 18px;padding:0} #ttResult li{margin:2px 0}
+#ttResult .warn{color:var(--late)} #ttResult .x{float:right;cursor:pointer;border:0;background:none;color:var(--mute);font-size:18px}
 </style>
 </head>
 <body>
@@ -71,6 +73,11 @@ td input.punch{background:var(--in);width:150px}
 
 <!-- ATTENDANCE -->
 <section id="att" class="hidden">
+  <div class="bar">
+    <label class="btn primary" id="ttBtn">⬆ Import TimeTrax file<input type="file" id="ttFile" accept=".xls,.xlsx" hidden></label>
+    <span class="muted">Choose <b>Employee_Wise_Attendance_Detail.xls</b> — it fills that day's punches for everyone.</span>
+  </div>
+  <div class="card hidden" id="ttResult"></div>
   <div class="bar">
     <button class="btn" id="aPrev">◀</button>
     <input type="date" id="aDate">
@@ -307,6 +314,112 @@ function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: 
 function init() { const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
 $('dDate').addEventListener('input', renderDash);
 init();
+// ---------- TimeTrax import ----------
+// TimeTrax spelling -> name used in this app (only the ones that differ beyond upper/lower case)
+const TT_NAMES = {
+  'muhammad umer': 'Muhammad Umer CHAUDHARY',
+  'muhammad usman manzoor': 'Usman Manzoor',
+  'muhammad usman tanveer': 'Usman Tanveer',
+  'muhammad waleed khalid': 'Waleed Khalid',
+  'syed saadat hussain bukhari': 'Syed Saadat Hussain',
+  'ahsan muaaz': 'Ahsan Muaz',
+  'hafiz muhammad hussnain haider kazmi': 'Hafiz Muhammad Husnain haider kazmi',
+  'falak chuhan': 'Falak Chauhan',
+  'shumaila khadim hussian bhatti': 'Shumaila Khadim hussain Bhatti',
+  'awais mustafa': 'Awais'
+};
+const norm = s => String(s).toLowerCase().replace(/\s+/g, ' ').trim();
+function ttMatch(ttName) {
+  const want = norm(TT_NAMES[norm(ttName)] || ttName);
+  return db.employees.find(e => norm(e.name) === want) || null;
+}
+function loadSheetJS() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((ok, fail) => { const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = ok; s.onerror = () => fail(new Error('Could not load the file reader. Check your internet connection and try again.'));
+    document.head.appendChild(s); });
+}
+const serialToIso = n => { const d = new Date(Date.UTC(1899, 11, 30) + Math.round(n) * 864e5);
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}` };
+const hmsToMin = s => { const m = String(s).match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/); return m ? String((+m[1]*60 + +m[2] + (+(m[3]||0) >= 30 ? 1 : 0)) % 1440) : null };
+const MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+
+function parseTimeTrax(rows) {
+  let printIso = null, printMin = null, emp = null; const out = [];
+  for (const r of rows) {
+    const line = r.filter(c => c !== '').join(' ');
+    const pm = line.match(/Print On\s*:\s*(\d{1,2})\s+(\w{3})\w*\s+(\d{4})\s+(\d{1,2}):(\d{2}):\d{2}\s*(AM|PM)/i);
+    if (pm) { printIso = `${pm[3]}-${pad(MONTHS[pm[2].toLowerCase()])}-${pad(+pm[1])}`;
+      let hh = +pm[4] % 12; if (/pm/i.test(pm[6])) hh += 12; printMin = hh*60 + +pm[5]; continue; }
+    const hdr = typeof r[1] === 'string' && r[1].match(/^\s*(\w+)\s+-\s+(.+?)\s+-\s+/);
+    if (hdr) { emp = hdr[2].trim(); continue; }
+    if (emp && typeof r[4] === 'number' && r[4] > 30000 && typeof r[3] === 'string' && r[3].trim()) {
+      out.push({ tt: emp, date: serialToIso(r[4]), shift: String(r[1] || '').trim(),
+        tin: String(r[8] || '').trim(), tout: String(r[11] || '').trim(), remark: String(r[24] || '').trim() });
+    }
+  }
+  return { printIso, printMin, rows: out };
+}
+
+function applyTimeTrax(p) {
+  const res = { dates: new Set(), punched: 0, absent: 0, off: 0, leave: 0, pending: [], unknown: new Set(), skipped: [] };
+  for (const x of p.rows) {
+    const e = ttMatch(x.tt);
+    if (!e) { res.unknown.add(x.tt); continue; }
+    res.dates.add(x.date);
+    const key = x.date + '|' + e.name;
+    const tin = hmsToMin(x.tin), tout = hmsToMin(x.tout);
+    let rec = null;
+    if (tin !== null) { rec = [tin, tout || '']; res.punched++; }
+    else if (/off day/i.test(x.remark)) { rec = ['Weekly Off', '']; res.off++; }
+    else if (/absent/i.test(x.remark)) {
+      // Report pulled mid-day: a shift that started less than 3 hours before print time isn't really absent yet
+      const sm = x.shift.match(/^(\d{2})(\d{2})/);
+      if (x.date === p.printIso && sm && p.printMin !== null && (+sm[1]*60 + +sm[2]) > p.printMin - 180) {
+        res.pending.push(e.name); delete db.records[key]; continue; }
+      rec = ['Absent', '']; res.absent++;
+    }
+    else if (/leave/i.test(x.remark)) { rec = ['Leave', '']; res.leave++; }
+    else { res.skipped.push(`${e.name} (${x.remark || 'no remark'})`); continue; }
+    db.records[key] = rec;
+  }
+  save();
+  return res;
+}
+
+function showImport(res, fileName) {
+  const ds = [...res.dates].sort(), fmt = d => new Date(d + 'T00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const span = ds.length ? (ds.length === 1 ? fmt(ds[0]) : `${fmt(ds[0])} – ${fmt(ds[ds.length-1])}`) : '';
+  const last = ds[ds.length-1];
+  const missing = last ? db.employees.filter(e => !db.records[last + '|' + e.name] && !res.pending.includes(e.name)).map(e => e.name) : [];
+  let html = `<button class="x" title="Close" onclick="this.parentNode.classList.add('hidden')">×</button>
+    <h2>✓ Imported ${esc(span)}</h2><div>${res.punched} punched in · ${res.absent} absent · ${res.off} weekly off · ${res.leave} leave</div><ul>`;
+  if (res.pending.length) html += `<li>${res.pending.length} left blank because their shift had only just started when the report was printed. Import a later report for the same day to fill them: ${esc(res.pending.join(', '))}</li>`;
+  if (missing.length) html += `<li class="warn">Not in this report (${fmt(last)}): ${esc(missing.join(', '))}</li>`;
+  if (res.unknown.size) html += `<li class="warn">In the report but not in your staff list, so skipped: ${esc([...res.unknown].join(', '))}. If one of these is someone on your list under a different spelling, rename them in Employees.</li>`;
+  if (res.skipped.length) html += `<li class="warn">Not filled (unclear remark): ${esc(res.skipped.join(', '))}</li>`;
+  html += `</ul><div class="muted" style="margin-top:6px">${esc(fileName)}</div>`;
+  $('ttResult').innerHTML = html; $('ttResult').classList.remove('hidden');
+  if (last) { $('aDate').value = last; $('dDate').value = last; $('wDate').value = monday(last); }
+  renderAtt();
+}
+
+$('ttFile').onchange = async ev => {
+  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+  if (!db.employees.length) { alert('Load your staff first: Employees → Restore backup.'); return; }
+  try {
+    await loadSheetJS();
+    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const off = XLSX.utils.decode_range(ws['!ref']).s.c;
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '', blankrows: true }).map(r => Array(off).fill('').concat(r));
+    const p = parseTimeTrax(rows);
+    if (!p.rows.length) throw new Error("This doesn't look like an Employee Wise Attendance Detail report — no attendance rows were found.");
+    showImport(applyTimeTrax(p), f.name);
+  } catch (err) { alert(err.message || String(err)); }
+};
+
 // ---------- PWA ----------
 function checkFirstRun(){ $('firstRun').classList.toggle('hidden', db.employees.length > 0) }
 checkFirstRun();
