@@ -84,6 +84,7 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
     <input type="date" id="aDate">
     <button class="btn" id="aNext">▶</button>
     <select id="aDept"><option value="">All departments</option></select>
+    <select id="aShift" class="hidden" title="Social shift"><option value="">All shifts</option><option>Morning</option><option>Evening</option><option>Night</option></select>
     <input id="aSearch" placeholder="Search name…">
     <button class="btn primary" id="aPdf">⬇ Export PDF</button>
     <span class="muted">Punch In: a time (e.g. 9:05 AM) or Weekly Off / Absent / Comp / Compensatory Leave / Leave</span>
@@ -144,6 +145,8 @@ function ensureShifts() { let ch = false;
   if (!db.settings.awais2am) { const a = db.employees.find(e => e.name === 'Awais'); if (a && a.start === '01:00') a.start = '02:00'; db.settings.awais2am = 1; ch = true }
   if (ch) save(); }
 const groupOf = e => e.dept === 'Social' && e.shift ? `Social · ${e.shift}` : e.dept;
+const currentPick = () => { const d = $('aDept').value, s = $('aShift').value;
+  return d === 'Social' && s ? `Social · ${s}` : d };
 const matchPick = (e, pick) => !pick || e.dept === pick || groupOf(e) === pick;
 const byGroup = (a, b) => deptRank(a.dept) - deptRank(b.dept) || a.dept.localeCompare(b.dept) ||
   (a.dept === 'Social' ? shiftRank(a.shift) - shiftRank(b.shift) : 0) || a.name.localeCompare(b.name);
@@ -227,7 +230,7 @@ function renderDash() {
 
 // ---------- attendance ----------
 function renderAtt() {
-  const date = $('aDate').value, dept = $('aDept').value, q = $('aSearch').value.toLowerCase();
+  const date = $('aDate').value, dept = currentPick(), q = $('aSearch').value.toLowerCase();
   const wk = monday(date);
   const emps = db.employees.filter(e => matchPick(e, dept) && e.name.toLowerCase().includes(q)).sort(byGroup);
   let lastG = null;
@@ -265,7 +268,8 @@ $('aTable').addEventListener('change', e => {
 });
 $('aPrev').onclick = () => { $('aDate').value = addDays($('aDate').value,-1); renderAtt() };
 $('aNext').onclick = () => { $('aDate').value = addDays($('aDate').value,1); renderAtt() };
-['aDate','aDept','aSearch'].forEach(id => $(id).addEventListener('input', renderAtt));
+['aDate','aShift','aSearch'].forEach(id => $(id).addEventListener('input', renderAtt));
+$('aDept').addEventListener('input', () => { $('aShift').value = ''; syncShift(); renderAtt() });
 
 // ---------- weekly summary ----------
 function compInfo(e, upto) {
@@ -336,10 +340,9 @@ $('xReset').onclick = () => { if (confirm('Delete all staff and attendance on th
 // ---------- init ----------
 function fillDepts() { const cur = $('aDept').value;
   const ds = [...new Set(db.employees.map(e=>e.dept))].sort((a,b) => deptRank(a)-deptRank(b) || a.localeCompare(b));
-  $('aDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option>${esc(d)}</option>` +
-    (d === 'Social' ? SHIFTS.filter(s => db.employees.some(e => e.dept === 'Social' && e.shift === s))
-      .map(s => `<option value="Social · ${s}">&nbsp;&nbsp;↳ Social · ${s}</option>`).join('') : '')).join('');
-  $('aDept').value = cur }
+  $('aDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option>${esc(d)}</option>`).join('');
+  $('aDept').value = cur; syncShift() }
+function syncShift() { const soc = $('aDept').value === 'Social'; $('aShift').classList.toggle('hidden', !soc); if (!soc) $('aShift').value = '' }
 function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: renderEmp })[active()]() }
 function init() { ensureShifts(); const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
 $('dDate').addEventListener('input', renderDash);
@@ -368,7 +371,7 @@ const STATUS_RGB = { 'On Time': [21,128,61], 'Late': [194,65,12], 'Absent': [185
   'Compensatory Leave': [124,58,237], 'Weekly Off': [107,114,128], 'Leave': [107,114,128], 'Not recorded': [150,150,150] };
 
 async function exportPdf() {
-  const date = $('aDate').value, pick = $('aDept').value;
+  const date = $('aDate').value, pick = currentPick();
   if (!date) return alert('Choose a date first.');
   const emps = db.employees.filter(e => matchPick(e, pick)).sort(byGroup);
   if (!emps.length) return alert('No staff in this selection.');
