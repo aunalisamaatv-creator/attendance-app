@@ -43,6 +43,7 @@ td input.punch{background:var(--in);width:150px}
 .trend div{flex:1;background:var(--acc);border-radius:3px 3px 0 0;min-width:4px;position:relative}
 .muted{color:var(--mute);font-size:12px}
 .hidden{display:none}
+tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:10px} tr.grp span{font-weight:400;color:var(--mute);margin-left:12px;font-size:13px}
 #ttResult h2{color:var(--ok)} #ttResult ul{margin:6px 0 0 18px;padding:0} #ttResult li{margin:2px 0}
 #ttResult .warn{color:var(--late)} #ttResult .x{float:right;cursor:pointer;border:0;background:none;color:var(--mute);font-size:18px}
 </style>
@@ -128,6 +129,24 @@ const KEY = 'staffAttendance.v1';
 let db;
 try { db = JSON.parse(localStorage.getItem(KEY)) } catch (e) {}
 if (!db) db = JSON.parse(JSON.stringify(SEED));
+const DEPT_ORDER = ['Social', 'Production', 'NLE', 'Website'];
+const deptRank = d => { const i = DEPT_ORDER.indexOf(d); return i < 0 ? 99 : i };
+const SHIFTS = ['Morning', 'Evening', 'Night'];
+const shiftRank = s => { const i = SHIFTS.indexOf(s); return i < 0 ? 9 : i };
+// Social media shift groups (anyone not listed defaults to Evening; editable in Employees)
+const SHIFT_DEFAULTS = { 'abdul rehman':'Morning', 'nafeesa younus':'Morning', 'faizan ali':'Morning', 'mehak javed':'Morning',
+  'iram munawar':'Morning', 'farhan malik':'Morning', 'batsha mehmood':'Morning', 'muhammad umer chaudhary':'Morning',
+  'ahsan muaz':'Morning', 'muhammad arslan mazhar':'Morning', 'shumaila khadim hussain bhatti':'Morning', 'muhammad talal':'Morning', 'awais':'Night' };
+function ensureShifts() { let ch = false;
+  db.employees.forEach(e => { if (e.dept === 'Social' && !SHIFTS.includes(e.shift)) {
+    e.shift = SHIFT_DEFAULTS[String(e.name).toLowerCase().replace(/\s+/g,' ').trim()] || 'Evening'; ch = true } });
+  // one-time: Awais's night shift now starts at 2:00 AM
+  if (!db.settings.awais2am) { const a = db.employees.find(e => e.name === 'Awais'); if (a && a.start === '01:00') a.start = '02:00'; db.settings.awais2am = 1; ch = true }
+  if (ch) save(); }
+const groupOf = e => e.dept === 'Social' && e.shift ? `Social · ${e.shift}` : e.dept;
+const matchPick = (e, pick) => !pick || e.dept === pick || groupOf(e) === pick;
+const byGroup = (a, b) => deptRank(a.dept) - deptRank(b.dept) || a.dept.localeCompare(b.dept) ||
+  (a.dept === 'Social' ? shiftRank(a.shift) - shiftRank(b.shift) : 0) || a.name.localeCompare(b.name);
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)) } catch (e) {} };
 
 // ---------- helpers ----------
@@ -210,10 +229,16 @@ function renderDash() {
 function renderAtt() {
   const date = $('aDate').value, dept = $('aDept').value, q = $('aSearch').value.toLowerCase();
   const wk = monday(date);
-  const emps = db.employees.filter(e => (!dept || e.dept === dept) && e.name.toLowerCase().includes(q))
-    .sort((a,b) => a.name.localeCompare(b.name));
+  const emps = db.employees.filter(e => matchPick(e, dept) && e.name.toLowerCase().includes(q)).sort(byGroup);
+  let lastG = null;
   $('aTable').innerHTML = '<tr><th>Employee</th><th>Dept</th><th>Start</th><th>Punch In</th><th>Time Out</th><th>Status</th><th>Min Late</th><th>Late this week</th><th>Remarks</th></tr>' +
     emps.map(e => {
+      let head = '';
+      const g = groupOf(e);
+      if (g !== lastG) { lastG = g;
+        const grp = emps.filter(x => groupOf(x) === g), st = grp.map(x => evalRec(x, date).status), c = s => st.filter(y => y === s).length;
+        head = `<tr class="grp"><td colspan="9">${esc(g.replace(' · ', ' — ') + (g.startsWith('Social · ') ? ' shift' : ''))}
+          <span>${grp.length} staff · On Time ${c('On Time')} · Late ${c('Late')} · Absent ${c('Absent')} · Weekly Off ${c('Weekly Off')}</span></td></tr>`; }
       const r = db.records[date+'|'+e.name] || ['',''];
       const ev = evalRec(e, date);
       let lw = 0; if (ev.status === 'Late') for (let d = wk; d <= date; d = addDays(d,1)) if (evalRec(e,d).status === 'Late') lw++;
@@ -222,7 +247,7 @@ function renderAtt() {
         ev.status === 'Comp' ? 'Comp day – clears 1 owed' : ev.status === 'Compensatory Leave' ? 'Comp leave taken' : ev.status;
       const alert = lw > db.settings.lateLimit;
       if (alert) rem += ` – ALERT: late ${lw} times this week`;
-      return `<tr data-n="${esc(e.name)}"><td>${esc(e.name)}</td><td>${esc(e.dept)}</td><td>${minToLabel(hmToMin(e.start))}</td>
+      return head + `<tr data-n="${esc(e.name)}"><td>${esc(e.name)}</td><td>${esc(e.dept === 'Social' && e.shift ? 'Social · ' + e.shift : e.dept)}</td><td>${minToLabel(hmToMin(e.start))}</td>
         <td><input class="punch" list="kw" value="${esc(pv)}" data-f="0"></td>
         <td><input value="${minToLabel(r[1])}" data-f="1" style="width:100px"></td>
         <td class="${cls(ev.status)}">${ev.status}</td><td>${ev.late||''}</td><td>${ev.status==='Late'?lw:''}</td>
@@ -271,11 +296,12 @@ $('wDate').addEventListener('input', renderWeek);
 // ---------- employees & settings ----------
 function renderEmp() {
   $('sGrace').value = db.settings.grace; $('sLimit').value = db.settings.lateLimit; $('sComp').value = db.settings.compWeeks;
-  $('eTable').innerHTML = '<tr><th>ID</th><th>Name</th><th>Shift Start</th><th>Department</th><th></th></tr>' +
+  $('eTable').innerHTML = '<tr><th>ID</th><th>Name</th><th>Shift Start</th><th>Department</th><th>Social shift</th><th></th></tr>' +
     db.employees.map((e,i) => `<tr data-i="${i}"><td><input data-k="id" value="${esc(e.id)}" style="width:80px"></td>
       <td><input data-k="name" value="${esc(e.name)}" style="width:240px"></td>
       <td><input type="time" data-k="start" value="${e.start}"></td>
       <td><input data-k="dept" value="${esc(e.dept)}" list="depts" style="width:120px"></td>
+      <td>${e.dept === 'Social' ? `<select data-k="shift">${SHIFTS.map(s => `<option${e.shift === s ? ' selected' : ''}>${s}</option>`).join('')}</select>` : '<span class="muted">—</span>'}</td>
       <td><button class="btn" data-del>Remove</button></td></tr>`).join('') +
     `<datalist id="depts">${[...new Set(db.employees.map(e=>e.dept))].map(d=>`<option>${esc(d)}</option>`).join('')}</datalist>`;
 }
@@ -284,7 +310,7 @@ $('eTable').addEventListener('change', e => {
   const emp = db.employees[e.target.closest('tr').dataset.i], v = e.target.value.trim();
   if (k === 'name' && v !== emp.name) { // carry attendance over to the new name
     for (const key of Object.keys(db.records)) { const [d,n] = key.split('|'); if (n === emp.name) { db.records[d+'|'+v] = db.records[key]; delete db.records[key] } } }
-  emp[k] = v; save(); fillDepts();
+  emp[k] = v; if (k === 'dept') { ensureShifts(); renderEmp() } save(); fillDepts();
 });
 $('eTable').addEventListener('click', e => { if (!e.target.hasAttribute('data-del')) return;
   const i = e.target.closest('tr').dataset.i;
@@ -309,15 +335,16 @@ $('xReset').onclick = () => { if (confirm('Delete all staff and attendance on th
 
 // ---------- init ----------
 function fillDepts() { const cur = $('aDept').value;
-  $('aDept').innerHTML = '<option value="">All departments</option>' + [...new Set(db.employees.map(e=>e.dept))].map(d=>`<option>${esc(d)}</option>`).join('');
+  const ds = [...new Set(db.employees.map(e=>e.dept))].sort((a,b) => deptRank(a)-deptRank(b) || a.localeCompare(b));
+  $('aDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option>${esc(d)}</option>` +
+    (d === 'Social' ? SHIFTS.filter(s => db.employees.some(e => e.dept === 'Social' && e.shift === s))
+      .map(s => `<option value="Social · ${s}">&nbsp;&nbsp;↳ Social · ${s}</option>`).join('') : '')).join('');
   $('aDept').value = cur }
 function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: renderEmp })[active()]() }
-function init() { const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
+function init() { ensureShifts(); const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
 $('dDate').addEventListener('input', renderDash);
 init();
 // ---------- PDF export ----------
-const DEPT_ORDER = ['Social', 'Production', 'NLE', 'Website'];
-const deptRank = d => { const i = DEPT_ORDER.indexOf(d); return i < 0 ? 99 : i };
 function attRow(e, date) {
   const r = db.records[date+'|'+e.name] || ['',''];
   const ev = evalRec(e, date), wk = monday(date);
@@ -343,38 +370,57 @@ const STATUS_RGB = { 'On Time': [21,128,61], 'Late': [194,65,12], 'Absent': [185
 async function exportPdf() {
   const date = $('aDate').value, pick = $('aDept').value;
   if (!date) return alert('Choose a date first.');
-  const depts = pick ? [pick] : [...new Set(db.employees.map(e => e.dept))].sort((a,b) => deptRank(a)-deptRank(b) || a.localeCompare(b));
+  const emps = db.employees.filter(e => matchPick(e, pick)).sort(byGroup);
+  if (!emps.length) return alert('No staff in this selection.');
+  // one page per department; Social split into its shift groups
+  const pages = [];
+  for (const e of emps) { let pg = pages.find(x => x.dept === e.dept); if (!pg) pages.push(pg = { dept: e.dept, groups: [] });
+    const label = e.dept === 'Social' && e.shift ? `${e.shift} shift` : '';
+    let g = pg.groups.find(x => x.label === label); if (!g) pg.groups.push(g = { label, rows: [] });
+    g.rows.push(attRow(e, date)); }
   try { await loadPdfLibs() } catch (err) { return alert(err.message) }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
-  const W = doc.internal.pageSize.getWidth();
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
   const nice = new Date(date + 'T00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
-  depts.forEach((dept, i) => {
+  const summary = rows => { const c = s => rows.filter(r => r.status === s).length;
+    return `Staff ${rows.length}   ·   On Time ${c('On Time')}   ·   Late ${c('Late')}   ·   Absent ${c('Absent')}   ·   Weekly Off ${c('Weekly Off')}   ·   Leave ${c('Leave') + c('Compensatory Leave') + c('Comp')}   ·   Not recorded ${c('Not recorded')}` };
+  pages.forEach((pg, i) => {
     if (i) doc.addPage();
-    const rows = db.employees.filter(e => e.dept === dept).sort((a,b) => a.name.localeCompare(b.name)).map(e => attRow(e, date));
-    const count = s => rows.filter(r => r.status === s).length;
+    const all = pg.groups.flatMap(g => g.rows);
+    const title = pick.startsWith('Social · ') ? `Social — ${pick.slice(9)} shift` : pg.dept;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29,35,48);
-    doc.text(`Staff Attendance – ${dept}`, 40, 46);
+    doc.text(`Staff Attendance – ${title}`, 40, 46);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(90,96,108);
-    doc.text(nice, 40, 64);
-    doc.text(`Staff ${rows.length}   ·   On Time ${count('On Time')}   ·   Late ${count('Late')}   ·   Absent ${count('Absent')}   ·   Weekly Off ${count('Weekly Off')}   ·   Leave ${count('Leave') + count('Compensatory Leave') + count('Comp')}   ·   Not recorded ${count('Not recorded')}`, 40, 82);
-    doc.autoTable({
-      startY: 96, margin: { left: 40, right: 40 },
-      head: [['Employee', 'Start', 'Punch In', 'Time Out', 'Status', 'Min Late', 'Late this week', 'Remarks']],
-      body: rows.map(r => [r.name, r.start, r.pin, r.pout, r.status, r.late, r.lw, r.rem]),
-      styles: { fontSize: 9, cellPadding: 5, lineColor: [227,230,234], lineWidth: 0.5, textColor: [29,35,48] },
-      headStyles: { fillColor: [37,99,235], textColor: 255, fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [245,246,248] },
-      columnStyles: { 0: { cellWidth: 170 }, 5: { halign: 'center' }, 6: { halign: 'center' }, 7: { cellWidth: 190 } },
-      didParseCell: d => { if (d.section !== 'body') return;
-        if (d.column.index === 4) { d.cell.styles.textColor = STATUS_RGB[d.cell.raw] || [29,35,48]; d.cell.styles.fontStyle = 'bold' }
-        if (d.column.index === 7 && rows[d.row.index].alert) { d.cell.styles.textColor = [185,28,28]; d.cell.styles.fontStyle = 'bold' } }
+    doc.text(nice, 40, 64); doc.text(summary(all), 40, 82);
+    let y = 96;
+    pg.groups.forEach(g => {
+      const showLabel = g.label && !pick.startsWith('Social · ');
+      if (showLabel) {
+        if (y > H - 120) { doc.addPage(); y = 40 }
+        y += 10; doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(37,99,235); doc.text(g.label, 40, y);
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(90,96,108); doc.text(summary(g.rows), 40 + doc.getTextWidth(g.label) * 12/9 + 14, y);
+        y += 8; }
+      const rows = g.rows;
+      doc.autoTable({
+        startY: y, margin: { left: 40, right: 40 },
+        head: [['Employee', 'Start', 'Punch In', 'Time Out', 'Status', 'Min Late', 'Late this week', 'Remarks']],
+        body: rows.map(r => [r.name, r.start, r.pin, r.pout, r.status, r.late, r.lw, r.rem]),
+        styles: { fontSize: 9, cellPadding: 5, lineColor: [227,230,234], lineWidth: 0.5, textColor: [29,35,48] },
+        headStyles: { fillColor: [37,99,235], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [245,246,248] },
+        columnStyles: { 0: { cellWidth: 170 }, 5: { halign: 'center' }, 6: { halign: 'center' }, 7: { cellWidth: 190 } },
+        didParseCell: d => { if (d.section !== 'body') return;
+          if (d.column.index === 4) { d.cell.styles.textColor = STATUS_RGB[d.cell.raw] || [29,35,48]; d.cell.styles.fontStyle = 'bold' }
+          if (d.column.index === 7 && rows[d.row.index].alert) { d.cell.styles.textColor = [185,28,28]; d.cell.styles.fontStyle = 'bold' } }
+      });
+      y = doc.lastAutoTable.finalY + 18;
     });
   });
-  const pages = doc.getNumberOfPages();
-  for (let n = 1; n <= pages; n++) { doc.setPage(n); doc.setFontSize(8); doc.setTextColor(150);
-    doc.text(`Page ${n} of ${pages}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, doc.internal.pageSize.getHeight() - 20, { align: 'right' }) }
-  doc.save(`Attendance_${pick ? pick.replace(/\s+/g,'_') : 'All_Departments'}_${date}.pdf`);
+  const n = doc.getNumberOfPages();
+  for (let k = 1; k <= n; k++) { doc.setPage(k); doc.setFontSize(8); doc.setTextColor(150);
+    doc.text(`Page ${k} of ${n}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, H - 20, { align: 'right' }) }
+  doc.save(`Attendance_${pick ? pick.replace(/\s*·\s*/g,'_').replace(/\s+/g,'_') : 'All_Departments'}_${date}.pdf`);
 }
 $('aPdf').onclick = () => exportPdf();
 
@@ -442,6 +488,9 @@ function applyTimeTrax(p) {
       const sm = x.shift.match(/^(\d{2})(\d{2})/);
       if (x.date === p.printIso && sm && p.printMin !== null && (+sm[1]*60 + +sm[2]) > p.printMin - 180) {
         res.pending.push(e.name); delete db.records[key]; continue; }
+      // keep a leave entered by hand (TimeTrax still shows people on leave as Absent)
+      const prev = db.records[key];
+      if (prev && ['Leave','Compensatory Leave','Comp'].includes(prev[0])) { res.leave++; continue; }
       rec = ['Absent', '']; res.absent++;
     }
     else if (/leave/i.test(x.remark)) { rec = ['Leave', '']; res.leave++; }
