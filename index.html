@@ -10,8 +10,8 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Attendance">
-<title>Staff Attendance Tracker</title>
+<meta name="apple-mobile-web-app-title" content="SAMAA Tracker">
+<title>SAMAA Digital Employee Tracker</title>
 <style>
 :root{--bg:#f5f6f8;--card:#fff;--ink:#1d2330;--mute:#6b7280;--line:#e3e6ea;--acc:#2563eb;--ok:#15803d;--late:#c2410c;--bad:#b91c1c;--off:#6b7280;--comp:#7c3aed;--in:#eef5ff}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#13161c;--card:#1c2029;--ink:#e6e8ec;--mute:#9aa1ad;--line:#2c313c;--acc:#60a5fa;--ok:#4ade80;--late:#fb923c;--bad:#f87171;--off:#9ca3af;--comp:#a78bfa;--in:#1e2a3d}}
@@ -50,7 +50,7 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
 </head>
 <body>
 <header>
-  <h1>Staff Attendance &amp; Late Tracker</h1>
+  <h1>SAMAA Digital Employee Tracker</h1>
   <nav id="nav">
     <button data-t="dash" class="on">Dashboard</button>
     <button data-t="att">Attendance</button>
@@ -393,7 +393,7 @@ async function exportPdf() {
     const all = pg.groups.flatMap(g => g.rows);
     const title = pick.startsWith('Social · ') ? `Social — ${pick.slice(9)} shift` : pg.dept;
     doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29,35,48);
-    doc.text(`Staff Attendance – ${title}`, 40, 46);
+    doc.text(`Attendance – ${title}`, 40, 46);
     doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(90,96,108);
     doc.text(nice, 40, 64); doc.text(summary(all), 40, 82);
     let y = 96;
@@ -422,7 +422,7 @@ async function exportPdf() {
   });
   const n = doc.getNumberOfPages();
   for (let k = 1; k <= n; k++) { doc.setPage(k); doc.setFontSize(8); doc.setTextColor(150);
-    doc.text(`Page ${k} of ${n}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, H - 20, { align: 'right' }) }
+    doc.text(`SAMAA Digital Employee Tracker  ·  Page ${k} of ${n}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, H - 20, { align: 'right' }) }
   doc.save(`Attendance_${pick ? pick.replace(/\s*·\s*/g,'_').replace(/\s+/g,'_') : 'All_Departments'}_${date}.pdf`);
 }
 $('aPdf').onclick = () => exportPdf();

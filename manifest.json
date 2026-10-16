@@ -1,6 +1,6 @@
 {
-  "name": "Staff Attendance Tracker",
-  "short_name": "Attendance",
+  "name": "SAMAA Digital Employee Tracker",
+  "short_name": "SAMAA Tracker",
   "description": "Staff attendance and late tracker that works offline.",
   "id": "./",
   "start_url": "./",
