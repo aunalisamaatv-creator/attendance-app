@@ -84,6 +84,7 @@ td input.punch{background:var(--in);width:150px}
     <button class="btn" id="aNext">▶</button>
     <select id="aDept"><option value="">All departments</option></select>
     <input id="aSearch" placeholder="Search name…">
+    <button class="btn primary" id="aPdf">⬇ Export PDF</button>
     <span class="muted">Punch In: a time (e.g. 9:05 AM) or Weekly Off / Absent / Comp / Compensatory Leave / Leave</span>
   </div>
   <div class="card"><table id="aTable"></table></div>
@@ -314,6 +315,69 @@ function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: 
 function init() { const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
 $('dDate').addEventListener('input', renderDash);
 init();
+// ---------- PDF export ----------
+const DEPT_ORDER = ['Social', 'Production', 'NLE', 'Website'];
+const deptRank = d => { const i = DEPT_ORDER.indexOf(d); return i < 0 ? 99 : i };
+function attRow(e, date) {
+  const r = db.records[date+'|'+e.name] || ['',''];
+  const ev = evalRec(e, date), wk = monday(date);
+  let lw = 0; if (ev.status === 'Late') for (let d = wk; d <= date; d = addDays(d,1)) if (evalRec(e,d).status === 'Late') lw++;
+  let rem = ev.status === 'Late' ? `Late by ${ev.late} min` : ev.status === 'Absent' ? 'Owes 1 comp day' :
+    ev.status === 'Comp' ? 'Comp day – clears 1 owed' : ev.status === 'Compensatory Leave' ? 'Comp leave taken' : ev.status;
+  if (lw > db.settings.lateLimit) rem += ` – ALERT: late ${lw} times this week`;
+  return { name: e.name, dept: e.dept, start: minToLabel(hmToMin(e.start)),
+    pin: r[0] === '' ? '' : isNaN(r[0]) ? r[0] : minToLabel(r[0]), pout: minToLabel(r[1]),
+    status: ev.status || 'Not recorded', late: ev.late || '', lw: ev.status === 'Late' ? lw : '', rem, alert: lw > db.settings.lateLimit };
+}
+function loadScript(src) {
+  return new Promise((ok, fail) => { const s = document.createElement('script'); s.src = src; s.onload = ok;
+    s.onerror = () => fail(new Error('Could not load the PDF maker. Check your internet connection and try again.')); document.head.appendChild(s) });
+}
+async function loadPdfLibs() {
+  if (!window.jspdf) await loadScript('https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
+  if (!window.jspdf.jsPDF.API.autoTable) await loadScript('https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js');
+}
+const STATUS_RGB = { 'On Time': [21,128,61], 'Late': [194,65,12], 'Absent': [185,28,28], 'Comp': [124,58,237],
+  'Compensatory Leave': [124,58,237], 'Weekly Off': [107,114,128], 'Leave': [107,114,128], 'Not recorded': [150,150,150] };
+
+async function exportPdf() {
+  const date = $('aDate').value, pick = $('aDept').value;
+  if (!date) return alert('Choose a date first.');
+  const depts = pick ? [pick] : [...new Set(db.employees.map(e => e.dept))].sort((a,b) => deptRank(a)-deptRank(b) || a.localeCompare(b));
+  try { await loadPdfLibs() } catch (err) { return alert(err.message) }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth();
+  const nice = new Date(date + 'T00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  depts.forEach((dept, i) => {
+    if (i) doc.addPage();
+    const rows = db.employees.filter(e => e.dept === dept).sort((a,b) => a.name.localeCompare(b.name)).map(e => attRow(e, date));
+    const count = s => rows.filter(r => r.status === s).length;
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29,35,48);
+    doc.text(`Staff Attendance – ${dept}`, 40, 46);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(90,96,108);
+    doc.text(nice, 40, 64);
+    doc.text(`Staff ${rows.length}   ·   On Time ${count('On Time')}   ·   Late ${count('Late')}   ·   Absent ${count('Absent')}   ·   Weekly Off ${count('Weekly Off')}   ·   Leave ${count('Leave') + count('Compensatory Leave') + count('Comp')}   ·   Not recorded ${count('Not recorded')}`, 40, 82);
+    doc.autoTable({
+      startY: 96, margin: { left: 40, right: 40 },
+      head: [['Employee', 'Start', 'Punch In', 'Time Out', 'Status', 'Min Late', 'Late this week', 'Remarks']],
+      body: rows.map(r => [r.name, r.start, r.pin, r.pout, r.status, r.late, r.lw, r.rem]),
+      styles: { fontSize: 9, cellPadding: 5, lineColor: [227,230,234], lineWidth: 0.5, textColor: [29,35,48] },
+      headStyles: { fillColor: [37,99,235], textColor: 255, fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [245,246,248] },
+      columnStyles: { 0: { cellWidth: 170 }, 5: { halign: 'center' }, 6: { halign: 'center' }, 7: { cellWidth: 190 } },
+      didParseCell: d => { if (d.section !== 'body') return;
+        if (d.column.index === 4) { d.cell.styles.textColor = STATUS_RGB[d.cell.raw] || [29,35,48]; d.cell.styles.fontStyle = 'bold' }
+        if (d.column.index === 7 && rows[d.row.index].alert) { d.cell.styles.textColor = [185,28,28]; d.cell.styles.fontStyle = 'bold' } }
+    });
+  });
+  const pages = doc.getNumberOfPages();
+  for (let n = 1; n <= pages; n++) { doc.setPage(n); doc.setFontSize(8); doc.setTextColor(150);
+    doc.text(`Page ${n} of ${pages}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, doc.internal.pageSize.getHeight() - 20, { align: 'right' }) }
+  doc.save(`Attendance_${pick ? pick.replace(/\s+/g,'_') : 'All_Departments'}_${date}.pdf`);
+}
+$('aPdf').onclick = () => exportPdf();
+
 // ---------- TimeTrax import ----------
 // TimeTrax spelling -> name used in this app (only the ones that differ beyond upper/lower case)
 const TT_NAMES = {
