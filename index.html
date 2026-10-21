@@ -87,6 +87,7 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
     <select id="aShift" class="hidden" title="Social shift"><option value="">All shifts</option><option>Morning</option><option>Evening</option><option>Night</option></select>
     <input id="aSearch" placeholder="Search name…">
     <button class="btn primary" id="aPdf">⬇ Export PDF</button>
+    <button class="btn primary" id="aJpg">⬇ Export JPG</button>
     <span class="muted">Punch In: a time (e.g. 9:05 AM) or Weekly Off / Absent / Comp / Compensatory Leave / Leave</span>
   </div>
   <div class="card"><table id="aTable"></table></div>
@@ -426,6 +427,69 @@ async function exportPdf() {
   doc.save(`Attendance_${pick ? pick.replace(/\s*·\s*/g,'_').replace(/\s+/g,'_') : 'All_Departments'}_${date}.pdf`);
 }
 $('aPdf').onclick = () => exportPdf();
+// ---------- JPG export (same content as the PDF, as one image) ----------
+function exportJpg() {
+  const date = $('aDate').value, pick = currentPick();
+  if (!date) return alert('Choose a date first.');
+  const emps = db.employees.filter(e => matchPick(e, pick)).sort(byGroup);
+  if (!emps.length) return alert('No staff in this selection.');
+  const sections = [];
+  for (const e of emps) { let s = sections.find(x => x.dept === e.dept); if (!s) sections.push(s = { dept: e.dept, groups: [] });
+    const label = e.dept === 'Social' && e.shift ? `${e.shift} shift` : '';
+    let g = s.groups.find(x => x.label === label); if (!g) s.groups.push(g = { label, rows: [] });
+    g.rows.push(attRow(e, date)); }
+  const all = sections.flatMap(s => s.groups.flatMap(g => g.rows));
+  const count = (rows, st) => rows.filter(r => r.status === st).length;
+  const summary = rows => `Staff ${rows.length}  ·  On Time ${count(rows,'On Time')}  ·  Late ${count(rows,'Late')}  ·  Absent ${count(rows,'Absent')}  ·  Weekly Off ${count(rows,'Weekly Off')}  ·  Leave ${count(rows,'Leave') + count(rows,'Compensatory Leave') + count(rows,'Comp')}  ·  Not recorded ${count(rows,'Not recorded')}`;
+  const title = !pick ? 'All Departments' : pick.startsWith('Social · ') ? `Social — ${pick.slice(9)} shift` : pick;
+  const nice = new Date(date + 'T00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+  const W = 1400, PAD = 40, ROW = 34, HEAD = 36, F = 'Helvetica, Arial, sans-serif';
+  const cols = [['Employee', 270], ['Start', 100], ['Punch In', 110], ['Time Out', 110], ['Status', 130], ['Min Late', 90], ['Late this week', 120], ['Remarks', W - 2*PAD - 930]];
+  const multi = sections.length > 1;
+  // layout pass: compute height
+  let H = PAD + 34 + 26 + 26 + 16;
+  sections.forEach(s => { if (multi) H += 46;
+    s.groups.forEach(g => { if (g.label && !pick.startsWith('Social · ')) H += 34; H += HEAD + g.rows.length * ROW + 22 }) });
+  H += 40;
+  const SC = 2, cv = document.createElement('canvas'); cv.width = W * SC; cv.height = H * SC;
+  const c = cv.getContext('2d'); c.scale(SC, SC);
+  c.fillStyle = '#ffffff'; c.fillRect(0, 0, W, H);
+  const txt = (s, x, y, font, color, align = 'left', maxW) => { c.font = font; c.fillStyle = color; c.textAlign = align;
+    s = String(s); if (maxW) while (s.length > 1 && c.measureText(s).width > maxW) s = s.slice(0, -2) + '…'; c.fillText(s, x, y) };
+  let y = PAD + 26;
+  txt(`Attendance – ${title}`, PAD, y, `bold 28px ${F}`, '#1d2330'); y += 28;
+  txt(nice, PAD, y, `16px ${F}`, '#5a606c'); y += 26;
+  txt(summary(all), PAD, y, `15px ${F}`, '#5a606c'); y += 26;
+  const rgb = a => `rgb(${a.join(',')})`;
+  sections.forEach(s => {
+    if (multi) { y += 18; txt(s.dept, PAD, y + 10, `bold 22px ${F}`, '#1d2330'); y += 28; }
+    s.groups.forEach(g => {
+      if (g.label && !pick.startsWith('Social · ')) { y += 8; txt(g.label, PAD, y + 14, `bold 18px ${F}`, '#2563eb');
+        c.font = `bold 18px ${F}`; const lw = c.measureText(g.label).width; txt(summary(g.rows), PAD + lw + 16, y + 14, `13px ${F}`, '#5a606c'); y += 26; }
+      // header
+      c.fillStyle = '#2563eb'; c.fillRect(PAD, y, W - 2*PAD, HEAD);
+      let x = PAD; cols.forEach(([n, w]) => { txt(n, x + 10, y + 23, `bold 14px ${F}`, '#ffffff'); x += w }); y += HEAD;
+      g.rows.forEach((r, i) => {
+        c.fillStyle = i % 2 ? '#ffffff' : '#f5f6f8'; c.fillRect(PAD, y, W - 2*PAD, ROW);
+        c.strokeStyle = '#e3e6ea'; c.lineWidth = 1; c.strokeRect(PAD + .5, y + .5, W - 2*PAD - 1, ROW);
+        const vals = [r.name, r.start, r.pin, r.pout, r.status, r.late, r.lw, r.rem]; let x = PAD;
+        vals.forEach((v, j) => { const w = cols[j][1];
+          let font = `14px ${F}`, col = '#1d2330', al = 'left', tx = x + 10;
+          if (j === 4) { font = `bold 14px ${F}`; col = rgb(STATUS_RGB[v] || [29,35,48]) }
+          if (j === 7 && r.alert) { font = `bold 14px ${F}`; col = '#b91c1c' }
+          if (j === 5 || j === 6) { al = 'center'; tx = x + w/2 }
+          txt(v, tx, y + 22, font, col, al, w - 18); x += w });
+        y += ROW; });
+      y += 22;
+    });
+  });
+  txt(`SAMAA Digital Employee Tracker  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - PAD, H - 18, `12px ${F}`, '#9aa1ad', 'right');
+  cv.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b);
+    a.download = `Attendance_${pick ? pick.replace(/\s*·\s*/g,'_').replace(/\s+/g,'_') : 'All_Departments'}_${date}.jpg`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000) }, 'image/jpeg', 0.92);
+}
+$('aJpg').onclick = () => exportJpg();
 
 // ---------- TimeTrax import ----------
 // TimeTrax spelling -> name used in this app (only the ones that differ beyond upper/lower case)
