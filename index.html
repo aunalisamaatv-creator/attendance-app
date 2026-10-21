@@ -111,7 +111,10 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
   </div>
   <div class="card"><h2>Staff</h2>
     <table id="eTable"></table>
-    <div class="bar" style="margin-top:10px"><button class="btn" id="eAdd">+ Add employee</button></div>
+    <div class="bar" style="margin-top:10px"><button class="btn" id="eAdd">+ Add employee</button>
+      <label class="btn primary">⬆ Import duty roster<input type="file" id="rFile" accept=".xlsx,.xls" hidden></label>
+      <span class="muted">Fills each person's Weekly Off from the monthly roster (e.g. October_2026_Roster.xlsx).</span></div>
+    <div class="card hidden" id="rResult" style="margin-top:10px"></div>
   </div>
   <div class="card"><h2>Data</h2>
     <div class="bar">
@@ -134,6 +137,7 @@ if (!db) db = JSON.parse(JSON.stringify(SEED));
 const DEPT_ORDER = ['Social', 'Production', 'NLE', 'Website'];
 const deptRank = d => { const i = DEPT_ORDER.indexOf(d); return i < 0 ? 99 : i };
 const SHIFTS = ['Morning', 'Evening', 'Night'];
+const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 const shiftRank = s => { const i = SHIFTS.indexOf(s); return i < 0 ? 9 : i };
 // Social media shift groups (anyone not listed defaults to Evening; editable in Employees)
 const SHIFT_DEFAULTS = { 'abdul rehman':'Morning', 'nafeesa younus':'Morning', 'faizan ali':'Morning', 'mehak javed':'Morning',
@@ -301,12 +305,13 @@ $('wDate').addEventListener('input', renderWeek);
 // ---------- employees & settings ----------
 function renderEmp() {
   $('sGrace').value = db.settings.grace; $('sLimit').value = db.settings.lateLimit; $('sComp').value = db.settings.compWeeks;
-  $('eTable').innerHTML = '<tr><th>ID</th><th>Name</th><th>Shift Start</th><th>Department</th><th>Social shift</th><th></th></tr>' +
+  $('eTable').innerHTML = '<tr><th>ID</th><th>Name</th><th>Shift Start</th><th>Department</th><th>Social shift</th><th>Weekly Off</th><th></th></tr>' +
     db.employees.map((e,i) => `<tr data-i="${i}"><td><input data-k="id" value="${esc(e.id)}" style="width:80px"></td>
       <td><input data-k="name" value="${esc(e.name)}" style="width:240px"></td>
       <td><input type="time" data-k="start" value="${e.start}"></td>
       <td><input data-k="dept" value="${esc(e.dept)}" list="depts" style="width:120px"></td>
       <td>${e.dept === 'Social' ? `<select data-k="shift">${SHIFTS.map(s => `<option${e.shift === s ? ' selected' : ''}>${s}</option>`).join('')}</select>` : '<span class="muted">—</span>'}</td>
+      <td><select data-k="off">${['', ...DAYS, ...(e.off && !DAYS.includes(e.off) ? [e.off] : [])].map(d => `<option value="${esc(d)}"${(e.off||'') === d ? ' selected' : ''}>${d || '—'}</option>`).join('')}</select></td>
       <td><button class="btn" data-del>Remove</button></td></tr>`).join('') +
     `<datalist id="depts">${[...new Set(db.employees.map(e=>e.dept))].map(d=>`<option>${esc(d)}</option>`).join('')}</datalist>`;
 }
@@ -598,6 +603,45 @@ $('ttFile').onchange = async ev => {
     if (!p.rows.length) throw new Error("This doesn't look like an Employee Wise Attendance Detail report — no attendance rows were found.");
     showImport(applyTimeTrax(p), f.name);
   } catch (err) { alert(err.message || String(err)); }
+};
+
+// ---------- Duty roster import (weekly offs) ----------
+const DAY_ABBR = { MON:'Monday', TUE:'Tuesday', WED:'Wednesday', THU:'Thursday', FRI:'Friday', SAT:'Saturday', SUN:'Sunday' };
+$('rFile').onchange = async ev => {
+  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+  try {
+    await loadSheetJS();
+    const wb = XLSX.read(new Uint8Array(await f.arrayBuffer()), { type: 'array' });
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: '' });
+    const hi = rows.findIndex(r => r.some(c => /employee name/i.test(c)));
+    if (hi < 0) throw new Error("Couldn't find an 'Employee Name' column in this file.");
+    const hdr = rows[hi], nameCol = hdr.findIndex(c => /employee name/i.test(c));
+    const dayCols = hdr.map((c, i) => { const m = String(c).match(/^\s*\d{1,2}\s*-\s*([A-Z]{3})/i); return m && DAY_ABBR[m[1].toUpperCase()] ? [i, DAY_ABBR[m[1].toUpperCase()]] : null }).filter(Boolean);
+    if (!dayCols.length) throw new Error("Couldn't find the day columns (like 1-THU, 2-FRI) in this file.");
+    const set = [], changed = [], unknown = [], none = [], seen = new Set();
+    for (const r of rows.slice(hi + 1)) {
+      const nm = String(r[nameCol] || '').trim(); if (!nm) continue;
+      const e = ttMatch(nm);
+      if (!e) { unknown.push(nm); continue }
+      seen.add(e.name);
+      const cnt = {}; dayCols.forEach(([i, d]) => { if (/^\s*off\s*$/i.test(String(r[i]))) cnt[d] = (cnt[d] || 0) + 1 });
+      const days = Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a]);
+      if (!days.length) { none.push(e.name); continue }
+      const off = days.length === 1 ? days[0] : DAYS.filter(d => days.includes(d)).join(', ');
+      if (e.off && e.off !== off) changed.push(`${e.name} (${e.off} → ${off})`);
+      e.off = off; set.push(e.name);
+    }
+    save(); renderEmp();
+    const missing = db.employees.filter(e => !seen.has(e.name)).map(e => e.name);
+    let html = `<button class="x" title="Close" onclick="this.parentNode.classList.add('hidden')" style="float:right;border:0;background:none;color:var(--mute);font-size:18px;cursor:pointer">×</button>
+      <h2 style="color:var(--ok)">✓ Weekly offs updated for ${set.length} staff</h2><ul style="margin:6px 0 0 18px;padding:0">`;
+    if (changed.length) html += `<li>Changed: ${esc(changed.join(', '))}</li>`;
+    if (missing.length) html += `<li style="color:var(--late)">Not in this roster (left as they were): ${esc(missing.join(', '))}</li>`;
+    if (unknown.length) html += `<li style="color:var(--late)">In the roster but not in your staff list, so skipped: ${esc(unknown.join(', '))}</li>`;
+    if (none.length) html += `<li style="color:var(--late)">No OFF day found in the roster for: ${esc(none.join(', '))}</li>`;
+    html += `</ul><div class="muted" style="margin-top:6px">${esc(f.name)}</div>`;
+    $('rResult').innerHTML = html; $('rResult').classList.remove('hidden');
+  } catch (err) { alert(err.message || String(err)) }
 };
 
 // ---------- PWA ----------
