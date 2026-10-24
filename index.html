@@ -55,6 +55,7 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
     <button data-t="dash" class="on">Dashboard</button>
     <button data-t="att">Attendance</button>
     <button data-t="week">Weekly Summary</button>
+    <button data-t="month">Monthly Report</button>
     <button data-t="emp">Employees</button>
   </nav>
   <button class="btn primary hidden" id="installBtn">Install app</button>
@@ -98,6 +99,19 @@ tr.grp td{background:var(--in);font-weight:700;padding-top:10px;padding-bottom:1
 <section id="week" class="hidden">
   <div class="bar"><label>Week starting (Mon) <input type="date" id="wDate"></label></div>
   <div class="card"><table id="wTable"></table></div>
+</section>
+
+<!-- MONTHLY REPORT -->
+<section id="month" class="hidden">
+  <div class="bar">
+    <label>Month <input type="month" id="mMonth"></label>
+    <select id="mDept"><option value="">All departments</option></select>
+    <select id="mShift" class="hidden" title="Social shift"><option value="">All shifts</option><option>Morning</option><option>Evening</option><option>Night</option></select>
+    <button class="btn primary" id="mPdf">⬇ Export PDF</button>
+    <button class="btn primary" id="mJpg">⬇ Export JPG</button>
+  </div>
+  <div class="muted" style="margin:-4px 0 12px">Comp owed: each week (Mon–Sun) allows 1 day off. Every extra day off in a week (Weekly Off + Absent) owes 1 compensatory day; each Comp / Compensatory Leave day clears one. Approved Leave is not counted as a day off.</div>
+  <div class="card"><table id="mTable"></table></div>
 </section>
 
 <!-- EMPLOYEES -->
@@ -347,10 +361,12 @@ $('xReset').onclick = () => { if (confirm('Delete all staff and attendance on th
 function fillDepts() { const cur = $('aDept').value;
   const ds = [...new Set(db.employees.map(e=>e.dept))].sort((a,b) => deptRank(a)-deptRank(b) || a.localeCompare(b));
   $('aDept').innerHTML = '<option value="">All departments</option>' + ds.map(d => `<option>${esc(d)}</option>`).join('');
-  $('aDept').value = cur; syncShift() }
+  $('aDept').value = cur; syncShift();
+  const mc = $('mDept').value; $('mDept').innerHTML = $('aDept').innerHTML; $('mDept').value = mc; syncMShift() }
+function syncMShift() { const soc = $('mDept').value === 'Social'; $('mShift').classList.toggle('hidden', !soc); if (!soc) $('mShift').value = '' }
 function syncShift() { const soc = $('aDept').value === 'Social'; $('aShift').classList.toggle('hidden', !soc); if (!soc) $('aShift').value = '' }
-function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, emp: renderEmp })[active()]() }
-function init() { ensureShifts(); const d = lastDate(); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
+function render() { ({ dash: renderDash, att: renderAtt, week: renderWeek, month: renderMonth, emp: renderEmp })[active()]() }
+function init() { ensureShifts(); const d = lastDate(); $('mMonth').value = d.slice(0,7); $('dDate').value = d; $('aDate').value = d; $('wDate').value = monday(d); fillDepts(); render() }
 $('dDate').addEventListener('input', renderDash);
 init();
 // ---------- PDF export ----------
@@ -643,6 +659,147 @@ $('rFile').onchange = async ev => {
     $('rResult').innerHTML = html; $('rResult').classList.remove('hidden');
   } catch (err) { alert(err.message || String(err)) }
 };
+
+// ---------- Monthly report ----------
+const mPick = () => { const d = $('mDept').value, s = $('mShift').value; return d === 'Social' && s ? `Social · ${s}` : d };
+function monthStats(e, ym) {
+  const [Y, M] = ym.split('-').map(Number);
+  const first = `${ym}-01`, last = iso(new Date(Y, M, 0)), end = last < today ? last : today;
+  const s = { present: 0, late: 0, lateMin: 0, absent: 0, off: 0, leave: 0, comp: 0, extra: 0, notrec: 0 };
+  const weeks = {};
+  for (let d = first; d <= end; d = addDays(d, 1)) {
+    const ev = evalRec(e, d), st = ev.status, wk = monday(d);
+    weeks[wk] = weeks[wk] || 0;
+    if (st === 'On Time') s.present++;
+    else if (st === 'Late') { s.present++; s.late++; s.lateMin += ev.late }
+    else if (st === 'Absent') { s.absent++; weeks[wk]++ }
+    else if (st === 'Weekly Off') { s.off++; weeks[wk]++ }
+    else if (st === 'Leave') s.leave++;
+    else if (st === 'Comp' || st === 'Compensatory Leave') s.comp++;
+    else s.notrec++;
+  }
+  s.extra = Object.values(weeks).reduce((a, n) => a + Math.max(0, n - 1), 0);
+  s.owed = Math.max(0, s.extra - s.comp);
+  return s;
+}
+function monthSections() {
+  const ym = $('mMonth').value, pick = mPick();
+  const emps = db.employees.filter(e => matchPick(e, pick)).sort(byGroup);
+  const out = [];
+  for (const e of emps) { let s = out.find(x => x.dept === e.dept); if (!s) out.push(s = { dept: e.dept, groups: [] });
+    const label = e.dept === 'Social' && e.shift ? `${e.shift} shift` : '';
+    let g = s.groups.find(x => x.label === label); if (!g) s.groups.push(g = { label, rows: [] });
+    g.rows.push({ name: e.name, start: minToLabel(hmToMin(e.start)), ...monthStats(e, ym) }); }
+  return { ym, pick, sections: out };
+}
+const M_COLS = [['Employee', 'name'], ['Start', 'start'], ['Present', 'present'], ['Late', 'late'], ['Min late', 'lateMin'], ['Absent', 'absent'], ['Weekly Off', 'off'], ['Leave', 'leave'], ['Extra days off', 'extra'], ['Comp done', 'comp'], ['Comp owed', 'owed']];
+const mTotals = rows => { const t = k => rows.reduce((a, r) => a + r[k], 0);
+  return `Staff ${rows.length}  ·  Late ${t('late')}  ·  Absent ${t('absent')}  ·  Weekly Off ${t('off')}  ·  Leave ${t('leave')}  ·  Comp owed ${t('owed')}` };
+const mTitle = pick => !pick ? 'All Departments' : pick.startsWith('Social · ') ? `Social — ${pick.slice(9)} shift` : pick;
+const mMonthName = ym => new Date(ym + '-01T00:00').toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+const mNote = ym => { const [Y, M] = ym.split('-').map(Number), last = iso(new Date(Y, M, 0));
+  return last >= today && `${ym}-01` <= today ? `Up to ${new Date(today + 'T00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}` : '' };
+
+function renderMonth() {
+  if (!$('mMonth').value) $('mMonth').value = lastDate().slice(0, 7);
+  const { ym, sections } = monthSections();
+  const cls = (k, v) => k === 'late' && v > 0 ? 's-Late' : k === 'absent' && v > 0 ? 's-Absent' : k === 'owed' && v > 0 ? 'alert' : '';
+  let html = '<tr>' + M_COLS.map(([n]) => `<th>${n}</th>`).join('') + '</tr>';
+  sections.forEach(s => s.groups.forEach(g => {
+    const rows = g.rows, label = s.dept + (g.label ? ' — ' + g.label : '');
+    html += `<tr class="grp"><td colspan="${M_COLS.length}">${esc(label)}<span>${mTotals(rows)}</span></td></tr>`;
+    html += rows.map(r => '<tr>' + M_COLS.map(([, k]) => `<td class="${cls(k, r[k])}">${k === 'name' || k === 'start' ? esc(r[k]) : r[k] || (k === 'owed' ? 0 : '')}</td>`).join('') + '</tr>').join('');
+  }));
+  $('mTable').innerHTML = html;
+}
+$('mMonth').addEventListener('input', renderMonth);
+$('mShift').addEventListener('input', renderMonth);
+$('mDept').addEventListener('input', () => { $('mShift').value = ''; syncMShift(); renderMonth() });
+
+const mFile = (pick, ym, ext) => `Monthly_Report_${pick ? pick.replace(/\s*·\s*/g,'_').replace(/\s+/g,'_') : 'All_Departments'}_${ym}.${ext}`;
+const mColor = (k, v) => k === 'late' && v > 0 ? [194,65,12] : k === 'absent' && v > 0 ? [185,28,28] : k === 'owed' && v > 0 ? [185,28,28] : null;
+
+async function monthPdf() {
+  const { ym, pick, sections } = monthSections();
+  if (!ym) return alert('Choose a month first.');
+  if (!sections.length) return alert('No staff in this selection.');
+  try { await loadPdfLibs() } catch (err) { return alert(err.message) }
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const all = sections.flatMap(s => s.groups.flatMap(g => g.rows));
+  const multi = sections.length > 1;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(29,35,48);
+  doc.text(`Monthly Report – ${mTitle(pick)}`, 40, 46);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(11); doc.setTextColor(90,96,108);
+  doc.text([mMonthName(ym), mNote(ym)].filter(Boolean).join('  ·  '), 40, 64); doc.text(mTotals(all), 40, 82);
+  let y = 96;
+  sections.forEach((s, si) => {
+    if (multi && si) { doc.addPage(); y = 40 }
+    if (multi) { doc.setFont('helvetica', 'bold'); doc.setFontSize(14); doc.setTextColor(29,35,48); doc.text(s.dept, 40, y + 12); y += 22 }
+    s.groups.forEach(g => {
+      if (g.label && !pick.startsWith('Social · ')) {
+        if (y > H - 120) { doc.addPage(); y = 40 }
+        y += 10; doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(37,99,235); doc.text(g.label, 40, y);
+        const lw = doc.getTextWidth(g.label); doc.setFont('helvetica', 'normal'); doc.setFontSize(9); doc.setTextColor(90,96,108); doc.text(mTotals(g.rows), 40 + lw + 14, y); y += 8 }
+      const rows = g.rows;
+      doc.autoTable({ startY: y, margin: { left: 40, right: 40 },
+        head: [M_COLS.map(c => c[0])], body: rows.map(r => M_COLS.map(([, k]) => k === 'owed' ? r[k] : (r[k] || ''))),
+        styles: { fontSize: 9, cellPadding: 5, lineColor: [227,230,234], lineWidth: 0.5, textColor: [29,35,48], halign: 'center' },
+        headStyles: { fillColor: [37,99,235], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [245,246,248] },
+        columnStyles: { 0: { cellWidth: 175, halign: 'left' }, 1: { halign: 'left' } },
+        didParseCell: d => { if (d.section !== 'body') return; const k = M_COLS[d.column.index][1], col = mColor(k, rows[d.row.index][k]);
+          if (col) { d.cell.styles.textColor = col; d.cell.styles.fontStyle = 'bold' } } });
+      y = doc.lastAutoTable.finalY + 18;
+    });
+  });
+  const n = doc.getNumberOfPages();
+  for (let k = 1; k <= n; k++) { doc.setPage(k); doc.setFontSize(8); doc.setTextColor(150);
+    doc.text(`SAMAA Digital Employee Tracker  ·  Page ${k} of ${n}  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - 40, H - 20, { align: 'right' }) }
+  doc.save(mFile(pick, ym, 'pdf'));
+}
+
+function monthJpg() {
+  const { ym, pick, sections } = monthSections();
+  if (!ym) return alert('Choose a month first.');
+  if (!sections.length) return alert('No staff in this selection.');
+  const all = sections.flatMap(s => s.groups.flatMap(g => g.rows)), multi = sections.length > 1;
+  const W = 1400, PAD = 40, ROW = 34, HEAD = 36, F = 'Helvetica, Arial, sans-serif';
+  const widths = [280, 110]; const rest = (W - 2*PAD - 390) / (M_COLS.length - 2);
+  const cols = M_COLS.map((c, i) => [c[0], c[1], widths[i] || rest]);
+  let H = PAD + 34 + 26 + 26 + 16;
+  sections.forEach(s => { if (multi) H += 46; s.groups.forEach(g => { if (g.label && !pick.startsWith('Social · ')) H += 34; H += HEAD + g.rows.length * ROW + 22 }) });
+  H += 40;
+  const SC = 2, cv = document.createElement('canvas'); cv.width = W * SC; cv.height = H * SC;
+  const c = cv.getContext('2d'); c.scale(SC, SC); c.fillStyle = '#fff'; c.fillRect(0, 0, W, H);
+  const txt = (s, x, y, font, color, align = 'left', maxW) => { c.font = font; c.fillStyle = color; c.textAlign = align;
+    s = String(s); if (maxW) while (s.length > 1 && c.measureText(s).width > maxW) s = s.slice(0, -2) + '…'; c.fillText(s, x, y) };
+  let y = PAD + 26;
+  txt(`Monthly Report – ${mTitle(pick)}`, PAD, y, `bold 28px ${F}`, '#1d2330'); y += 28;
+  txt([mMonthName(ym), mNote(ym)].filter(Boolean).join('  ·  '), PAD, y, `16px ${F}`, '#5a606c'); y += 26;
+  txt(mTotals(all), PAD, y, `15px ${F}`, '#5a606c'); y += 26;
+  sections.forEach(s => {
+    if (multi) { y += 18; txt(s.dept, PAD, y + 10, `bold 22px ${F}`, '#1d2330'); y += 28 }
+    s.groups.forEach(g => {
+      if (g.label && !pick.startsWith('Social · ')) { y += 8; txt(g.label, PAD, y + 14, `bold 18px ${F}`, '#2563eb');
+        c.font = `bold 18px ${F}`; const lw = c.measureText(g.label).width; txt(mTotals(g.rows), PAD + lw + 16, y + 14, `13px ${F}`, '#5a606c'); y += 26 }
+      c.fillStyle = '#2563eb'; c.fillRect(PAD, y, W - 2*PAD, HEAD);
+      let x = PAD; cols.forEach(([n, , w], i) => { txt(n, i < 2 ? x + 10 : x + w/2, y + 23, `bold 14px ${F}`, '#fff', i < 2 ? 'left' : 'center', w - 8); x += w }); y += HEAD;
+      g.rows.forEach((r, ri) => {
+        c.fillStyle = ri % 2 ? '#fff' : '#f5f6f8'; c.fillRect(PAD, y, W - 2*PAD, ROW);
+        c.strokeStyle = '#e3e6ea'; c.lineWidth = 1; c.strokeRect(PAD + .5, y + .5, W - 2*PAD - 1, ROW);
+        let x = PAD; cols.forEach(([, k, w], i) => { const v = r[k], col = mColor(k, v);
+          txt(k === 'owed' ? v : (v || ''), i < 2 ? x + 10 : x + w/2, y + 22, `${col ? 'bold ' : ''}14px ${F}`, col ? `rgb(${col.join(',')})` : '#1d2330', i < 2 ? 'left' : 'center', w - 16); x += w });
+        y += ROW });
+      y += 22;
+    });
+  });
+  txt(`SAMAA Digital Employee Tracker  ·  Generated ${new Date().toLocaleString('en-GB')}`, W - PAD, H - 18, `12px ${F}`, '#9aa1ad', 'right');
+  cv.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = mFile(pick, ym, 'jpg');
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000) }, 'image/jpeg', 0.92);
+}
+$('mPdf').onclick = () => monthPdf();
+$('mJpg').onclick = () => monthJpg();
 
 // ---------- PWA ----------
 function checkFirstRun(){ $('firstRun').classList.toggle('hidden', db.employees.length > 0) }
